@@ -65,7 +65,7 @@ function toHour(v: unknown): number | null {
   if (typeof v === "string") {
     const m = v.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i);
     if (!m) return null;
-    let h = parseInt(m[1]);
+    let h = parseInt(m[1] ?? "0");
     if (m[3]) { const pm = m[3].toLowerCase() === "pm"; if (h === 12) h = pm ? 12 : 0; else if (pm) h += 12; }
     return h % 24;
   }
@@ -81,7 +81,7 @@ export async function parseResponses(buf: ArrayBuffer): Promise<ParsedResponses>
   const ws = wb.worksheets[0];
   const map = new Map<string, Reading>();
   let minDate: Date | null = null, maxDate: Date | null = null, rows = 0;
-  ws.eachRow((row, i) => {
+  ws?.eachRow((row, i) => {
     if (i === 1) return;
     const date = toDate(row.getCell("C").value);
     const hour = toHour(row.getCell("D").value);
@@ -183,7 +183,7 @@ export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf
   const out = await wb.xlsx.writeBuffer();
   const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const end = addDays(start, 6);
-  const up = (d: Date) => `${MONTHS[d.getUTCMonth()].toUpperCase()}_${d.getUTCDate()}`;
+  const up = (d: Date) => `${(MONTHS[d.getUTCMonth()] ?? "").toUpperCase()}_${d.getUTCDate()}`;
   name = `${up(start)}-${up(end)}_MKT_Monitoring_ULC_Merck.xlsx`;
   return { blob, fileName: name, filled, missing };
 }
