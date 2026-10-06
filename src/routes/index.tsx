@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { FileSpreadsheet, Download, Upload, Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import { FileSpreadsheet, Download, Upload, Loader as Loader2, CircleCheck as CheckCircle2, TriangleAlert as AlertTriangle, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,6 +20,7 @@ export const Route = createFileRoute("/")({
 });
 
 type Parsed = Awaited<ReturnType<typeof import("@/lib/mkt-converter").parseResponses>>;
+type Correction = Parsed["corrections"][number];
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 
@@ -45,7 +46,7 @@ function Index() {
   const [start, setStart] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<{ url: string; name: string; filled: number; missing: string[] } | null>(null);
+  const [result, setResult] = useState<{ url: string; name: string; filled: number; missing: string[]; corrections: Correction[] } | null>(null);
 
   async function onResponses(f: File) {
     setRespFile(f); setError(""); setResult(null); setBusy(true);
@@ -73,7 +74,7 @@ function Index() {
       const { buildWorkbook } = await import("@/lib/mkt-converter");
       const res = await buildWorkbook(parsed, new Date(`${start}T00:00:00Z`), mktFile ? await mktFile.arrayBuffer() : undefined);
       if (result) URL.revokeObjectURL(result.url);
-      setResult({ url: URL.createObjectURL(res.blob), name: res.fileName, filled: res.filled, missing: res.missing });
+      setResult({ url: URL.createObjectURL(res.blob), name: res.fileName, filled: res.filled, missing: res.missing, corrections: res.corrections });
     } catch (e) {
       setError("Conversion failed. Check that the MKT workbook is the right file.");
       console.error(e);
@@ -99,6 +100,9 @@ function Index() {
             <div className="rounded-lg border border-border bg-card p-5">
               <div className="text-sm text-muted-foreground">
                 {parsed.rows.toLocaleString()} readings found · {parsed.minDate && iso(parsed.minDate)} to {parsed.maxDate && iso(parsed.maxDate)}
+                {parsed.corrections.length > 0 && (
+                  <span className="ml-1 text-accent-foreground font-medium">· {parsed.corrections.length} corrections detected</span>
+                )}
               </div>
               <div className="mt-4 flex flex-wrap items-end gap-4">
                 <div className="space-y-1.5">
@@ -119,6 +123,35 @@ function Index() {
           {result && (
             <div className="rounded-lg border border-primary/30 bg-secondary p-5">
               <div className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5 text-primary" /> Ready: {result.filled} of 168 hours filled</div>
+              {result.corrections.length > 0 && (
+                <details className="mt-3 text-sm text-muted-foreground">
+                  <summary className="cursor-pointer flex items-center gap-1.5"><Wrench className="h-4 w-4 text-accent" /> {result.corrections.length} values were auto-corrected</summary>
+                  <div className="mt-2 max-h-48 overflow-auto font-mono text-xs">
+                    <table className="w-full border-collapse">
+                      <thead>
+                        <tr className="border-b text-left">
+                          <th className="py-1 pr-3 font-medium">Date</th>
+                          <th className="py-1 pr-3 font-medium">Time</th>
+                          <th className="py-1 pr-3 font-medium">Sensor</th>
+                          <th className="py-1 pr-3 font-medium text-right">Original</th>
+                          <th className="py-1 font-medium text-right">Corrected</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {result.corrections.map((c, idx) => (
+                          <tr key={idx} className="border-b border-border/50">
+                            <td className="py-1 pr-3">{c.date}</td>
+                            <td className="py-1 pr-3">{c.hour}</td>
+                            <td className="py-1 pr-3 max-w-[12rem] truncate">{c.label}</td>
+                            <td className="py-1 pr-3 text-right text-destructive">{c.raw}</td>
+                            <td className="py-1 text-right text-primary">{c.cleaned === null ? "(blank)" : c.cleaned}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </details>
+              )}
               {result.missing.length > 0 && (
                 <details className="mt-2 text-sm text-muted-foreground">
                   <summary className="cursor-pointer">{result.missing.length} hours have no reading (left blank)</summary>
@@ -133,7 +166,7 @@ function Index() {
         </div>
 
         <p className="mt-10 text-xs text-muted-foreground">
-          Files are processed in your browser and never uploaded. If several entries exist for the same hour, the one submitted closest to that hour is used. Chiller uses the NEW Chiller WH1 column; Bio Ref uses BioRef 1.
+          Files are processed in your browser and never uploaded. If several entries exist for the same hour, the one submitted closest to that hour is used. Chiller uses the NEW Chiller WH1 column; Bio Ref uses BioRef 1. Values outside the expected range are auto-corrected: a missing decimal point is reinserted (e.g. 300 → 30.0), and impossible values like dates or 3°C readings are left blank. Every change is listed in the results so you can verify.
         </p>
       </div>
     </main>

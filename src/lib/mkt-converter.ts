@@ -22,6 +22,28 @@ export const COLUMN_MAP: { target: string; source: string[]; label: string }[] =
   { target: "S", source: ["AD", "G"], label: "Temperature (Chiller) Range 2 -8" },
 ];
 const STAT_COLS = ["C", "E", "G", "I", "J", "L", "N", "P", "R", "S"];
+
+// Plausible value ranges per target column (generous bounds around the expected operating range).
+// Used to detect guard typos: missing decimal points and impossible values.
+const RANGES: Record<string, { min: number; max: number }> = {
+  C: { min: 10, max: 50 },   // Ambient Shelves 26-30
+  D: { min: 0, max: 100 },   // Humidity
+  E: { min: 0, max: 40 },    // AC1 15-25
+  F: { min: 0, max: 100 },   // Humidity
+  G: { min: 0, max: 40 },    // AC2 15-25
+  H: { min: 0, max: 100 },   // Humidity
+  I: { min: -100, max: -50 }, // Ultralow -80
+  J: { min: 10, max: 50 },   // Oxidizing 26-30
+  K: { min: 0, max: 100 },   // Humidity
+  L: { min: 10, max: 50 },   // Flammable 26-30
+  M: { min: 0, max: 100 },   // Humidity
+  N: { min: 10, max: 50 },   // Ambient Rack 26-30
+  O: { min: 0, max: 100 },   // Humidity
+  P: { min: 10, max: 50 },   // Toxic/Corrosive 26-30
+  Q: { min: 0, max: 100 },   // Humidity
+  R: { min: -40, max: 5 },   // Bioref -20
+  S: { min: -10, max: 20 },  // Chiller 2-8
+};
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "June", "July", "August", "Sept", "Oct", "Nov", "Dec"];
 
 const colNum = (l: string) => l.split("").reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
@@ -73,13 +95,34 @@ function toHour(v: unknown): number | null {
 }
 
 export type Reading = { ts: number; values: Record<string, number | null> };
-export type ParsedResponses = { map: Map<string, Reading>; minDate: Date | null; maxDate: Date | null; rows: number };
+
+export type Correction = {
+  date: string;
+  hour: string;
+  label: string;
+  raw: number;
+  cleaned: number | null;
+  action: "decimal" | "blank";
+};
+
+export type ParsedResponses = { map: Map<string, Reading>; minDate: Date | null; maxDate: Date | null; rows: number; corrections: Correction[] };
+
+function cleanValue(val: number, target: string): { value: number | null; action: "decimal" | "blank" | null } {
+  const range = RANGES[target];
+  if (!range) return { value: val, action: null };
+  if (val >= range.min && val <= range.max) return { value: val, action: null };
+  // Missing decimal point: value is ~10x the expected range and dividing by 10 lands in range.
+  // Only apply to positive values — negative out-of-range values are more likely wrong-column errors.
+  if (val > 0 && val / 10 >= range.min && val / 10 <= range.max) return { value: val / 10, action: "decimal" };
+  return { value: null, action: "blank" };
+}
 
 export async function parseResponses(buf: ArrayBuffer): Promise<ParsedResponses> {
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
   const ws = wb.worksheets[0];
   const map = new Map<string, Reading>();
+  const corrections: Correction[] = [];
   let minDate: Date | null = null, maxDate: Date | null = null, rows = 0;
   ws?.eachRow((row, i) => {
     if (i === 1) return;
@@ -94,17 +137,26 @@ export async function parseResponses(buf: ArrayBuffer): Promise<ParsedResponses>
     const prev = map.get(key);
     // several submissions for the same hour: keep the one submitted closest to that hour
     if (prev && Math.abs(prev.ts - slot) <= Math.abs(ts - slot)) return;
+    const hourLabel = hour === 0 ? "2400H" : `${String(hour).padStart(2, "0")}00H`;
+    const dateStr = date.toISOString().slice(0, 10);
     const values: Record<string, number | null> = {};
     for (const m of COLUMN_MAP) {
       let val: number | null = null;
       for (const s of m.source) { val = toNumber(row.getCell(s).value); if (val !== null) break; }
+      if (val !== null) {
+        const cleaned = cleanValue(val, m.target);
+        if (cleaned.action) {
+          corrections.push({ date: dateStr, hour: hourLabel, label: m.label, raw: val, cleaned: cleaned.value, action: cleaned.action });
+        }
+        val = cleaned.value;
+      }
       values[m.target] = val;
     }
     map.set(key, { ts, values });
     if (!minDate || date < minDate) minDate = date;
     if (!maxDate || date > maxDate) maxDate = date;
   });
-  return { map, minDate, maxDate, rows };
+  return { map, minDate, maxDate, rows, corrections };
 }
 
 export function sheetNameFor(start: Date) {
@@ -113,7 +165,7 @@ export function sheetNameFor(start: Date) {
   return `Temp ${f(start)}-${f(end)}`;
 }
 
-export type ConvertResult = { blob: Blob; fileName: string; filled: number; missing: string[] };
+export type ConvertResult = { blob: Blob; fileName: string; filled: number; missing: string[]; corrections: Correction[] };
 
 export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf?: ArrayBuffer): Promise<ConvertResult> {
   const wb = new ExcelJS.Workbook();
@@ -199,7 +251,7 @@ export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf
   const end = addDays(start, 6);
   const up = (d: Date) => `${(MONTHS[d.getUTCMonth()] ?? "").toUpperCase()}_${d.getUTCDate()}`;
   name = `${up(start)}-${up(end)}_MKT_Monitoring_ULC_Merck.xlsx`;
-  return { blob, fileName: name, filled, missing };
+  return { blob, fileName: name, filled, missing, corrections: parsed.corrections };
 }
 
 function addSummaryColumn(wb: ExcelJS.Workbook, sheetName: string, start: Date, stats: Record<string, number | string>) {
