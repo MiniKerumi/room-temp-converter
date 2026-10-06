@@ -157,13 +157,25 @@ export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf
 
   // formulas (same as existing MKT sheets)
   ws.getCell("B173").value = "MIN"; ws.getCell("B174").value = "MAX"; ws.getCell("B175").value = "AVERAGE"; ws.getCell("B178").value = "MKT";
+  // Pre-compute results so Excel shows values immediately (cached formula results)
+  const stats: Record<string, number | string> = {};
   for (const c of STAT_COLS) {
-    ws.getCell(`${c}173`).value = { formula: `MIN(${c}2:${c}170)` };
-    ws.getCell(`${c}174`).value = { formula: `MAX(${c}2:${c}170)` };
-    ws.getCell(`${c}175`).value = { formula: `IFERROR(AVERAGE(${c}2:${c}170),"")` };
-    ws.getCell(`${c}176`).value = { formula: `IFERROR(${c}175+273.15,"")` };
-    ws.getCell(`${c}177`).value = { formula: `IFERROR(-$B$181/($B$182*${c}176),"")` };
-    ws.getCell(`${c}178`).value = { formula: `IFERROR($B$181/($B$182*(-${c}177))-$B$183,"")` };
+    const vals: number[] = [];
+    for (let r = 2; r <= 170; r++) { const v = ws.getCell(`${c}${r}`).value; if (typeof v === "number") vals.push(v); }
+    const has = vals.length > 0;
+    const avg = has ? vals.reduce((a, b) => a + b, 0) / vals.length : "";
+    const k = typeof avg === "number" ? avg + 273.15 : "";
+    const ln = typeof k === "number" ? -83.14472 / (0.008314472 * k) : "";
+    const mkt = typeof ln === "number" ? 83.14472 / (0.008314472 * -ln) - 273.15 : "";
+    const res: Record<number, number | string> = { 173: has ? Math.min(...vals) : 0, 174: has ? Math.max(...vals) : 0, 175: avg, 176: k, 177: ln, 178: mkt };
+    for (const [n, v] of Object.entries(res)) stats[`${c}${n}`] = v;
+    const R = (n: number) => res[n] as number;
+    ws.getCell(`${c}173`).value = { formula: `MIN(${c}2:${c}170)`, result: R(173) };
+    ws.getCell(`${c}174`).value = { formula: `MAX(${c}2:${c}170)`, result: R(174) };
+    ws.getCell(`${c}175`).value = { formula: `IFERROR(AVERAGE(${c}2:${c}170),"")`, result: R(175) };
+    ws.getCell(`${c}176`).value = { formula: `IFERROR(${c}175+273.15,"")`, result: R(176) };
+    ws.getCell(`${c}177`).value = { formula: `IFERROR(-$B$181/($B$182*${c}176),"")`, result: R(177) };
+    ws.getCell(`${c}178`).value = { formula: `IFERROR($B$181/($B$182*(-${c}177))-$B$183,"")`, result: R(178) };
     for (const n of [173, 174, 175, 178]) ws.getCell(`${c}${n}`).numFmt = "0.00";
   }
   ws.getCell("A181").value = "Delta H"; ws.getCell("B181").value = 83.14472; ws.getCell("C181").value = "kJ/mole";
@@ -177,9 +189,11 @@ export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf
     const sumIdx = ordered.findIndex((w) => w.name === "Summary");
     ordered.splice(sumIdx >= 0 ? sumIdx + 1 : 0, 0, ws);
     ordered.forEach((w, i) => ((w as unknown as { orderNo: number }).orderNo = i));
-    addSummaryColumn(wb, name, start);
+    addSummaryColumn(wb, name, start, stats);
   }
 
+  // force Excel to recalculate everything when the file is opened
+  (wb as unknown as { calcProperties: { fullCalcOnLoad: boolean } }).calcProperties = { fullCalcOnLoad: true };
   const out = await wb.xlsx.writeBuffer();
   const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const end = addDays(start, 6);
@@ -188,7 +202,7 @@ export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf
   return { blob, fileName: name, filled, missing };
 }
 
-function addSummaryColumn(wb: ExcelJS.Workbook, sheetName: string, start: Date) {
+function addSummaryColumn(wb: ExcelJS.Workbook, sheetName: string, start: Date, stats: Record<string, number | string>) {
   const sum = wb.getWorksheet("Summary");
   if (!sum) return;
   // find last column whose row-4 cell links to a "Temp" sheet
@@ -206,7 +220,10 @@ function addSummaryColumn(wb: ExcelJS.Workbook, sheetName: string, start: Date) 
     const v = src.value as { formula?: string } | null;
     const dst = row.getCell(target);
     if (v && typeof v === "object" && v.formula) {
-      dst.value = { formula: v.formula.replace(/'[^']*'!/g, `'${sheetName}'!`) };
+      const formula = v.formula.replace(/'[^']*'!/g, `'${sheetName}'!`);
+      const ref = formula.match(/^'[^']*'!\$?([A-Z]+)\$?(\d+)$/);
+      const result = ref ? stats[`${ref[1]}${ref[2]}`] : undefined;
+      dst.value = (result !== undefined ? { formula, result } : { formula }) as ExcelJS.CellValue;
       dst.style = JSON.parse(JSON.stringify(src.style ?? {}));
     }
   });
