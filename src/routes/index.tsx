@@ -71,8 +71,7 @@ function Index() {
     setBusy(true); setError("");
     try {
       const { buildWorkbook } = await import("@/lib/mkt-converter");
-      const [y, m, d] = start.split("-").map(Number);
-      const res = await buildWorkbook(parsed, new Date(Date.UTC(y, m - 1, d)), mktFile ? await mktFile.arrayBuffer() : undefined);
+      const res = await buildWorkbook(parsed, new Date(`${start}T00:00:00Z`), mktFile ? await mktFile.arrayBuffer() : undefined);
       if (result) URL.revokeObjectURL(result.url);
       setResult({ url: URL.createObjectURL(res.blob), name: res.fileName, filled: res.filled, missing: res.missing });
     } catch (e) {
