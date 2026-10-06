@@ -90,8 +90,10 @@ export async function parseResponses(buf: ArrayBuffer): Promise<ParsedResponses>
     const tsRaw = cellRaw(row.getCell("A").value);
     const ts = tsRaw instanceof Date ? +tsRaw : i;
     const key = `${dayKey(date)}|${hour}`;
+    const slot = +date + hour * 3600000;
     const prev = map.get(key);
-    if (prev && prev.ts > ts) return; // keep latest submission for that hour
+    // several submissions for the same hour: keep the one submitted closest to that hour
+    if (prev && Math.abs(prev.ts - slot) <= Math.abs(ts - slot)) return;
     const values: Record<string, number | null> = {};
     for (const m of COLUMN_MAP) {
       let val: number | null = null;
