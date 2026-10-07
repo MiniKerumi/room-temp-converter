@@ -281,9 +281,10 @@ export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf
 }
 
 function weekLinkCols(sum: ExcelJS.Worksheet) {
-  const cols: number[] = [];
-  sum.getRow(4).eachCell((cell, c) => { if (cell.type === ExcelJS.ValueType.Formula && cell.formula.includes("Temp ")) cols.push(c); });
-  return cols;
+  // a week column = any column with a link to a 'Temp' sheet in the stat blocks (rows 4-52)
+  const set = new Set<number>();
+  for (let r = 4; r <= 52; r++) sum.getRow(r).eachCell((cell, c) => { if (cell.type === ExcelJS.ValueType.Formula && cell.formula.includes("Temp ")) set.add(c); });
+  return [...set].sort((a, b) => a - b);
 }
 
 /** Shift every Summary cell at column >= col one column to the right (used to make room for a new week). */
@@ -312,8 +313,8 @@ function updateSummary(wb: ExcelJS.Workbook, sheetName: string, start: Date, sta
   const sum = wb.getWorksheet("Summary")!;
   let cols = weekLinkCols(sum);
   const last = cols[cols.length - 1]!;
-  const lastF = sum.getRow(4).getCell(last).formula;
-  const already = cols.find((c) => sum.getRow(4).getCell(c).formula.includes(`'${sheetName}'`));
+  const lastF = "";
+  const already = cols.find((c) => { const x = sum.getCell(7, c); return x.type === ExcelJS.ValueType.Formula && x.formula.includes(`'${sheetName}'`); });
   const target = already ?? last + 1;
 
   if (!already) {
@@ -378,7 +379,7 @@ function updateSummary(wb: ExcelJS.Workbook, sheetName: string, start: Date, sta
       const wk = weeksByMonth[+mi] ?? [];
       const vals = wk.map((c) => numOf(sum.getCell(mktRow, c))).filter((v): v is number => v !== null);
       const cell = sum.getCell(r, col);
-      if (!wk.length || !vals.length) { if (!wk.length) cell.value = null; continue; }
+      if (!wk.length || !vals.length) continue; // leave untouched
       const contiguous = wk.every((c, k) => k === 0 || c === wk[k - 1]! + 1);
       const formula = contiguous ? `AVERAGE(${L(wk[0]!)}${mktRow}:${L(wk[wk.length - 1]!)}${mktRow})` : `AVERAGE(${wk.map((c) => `${L(c)}${mktRow}`).join(",")})`;
       const result = vals.reduce((a, b) => a + b, 0) / vals.length;
