@@ -1,173 +1,94 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
-import { FileSpreadsheet, Download, Upload, Loader as Loader2, CircleCheck as CheckCircle2, TriangleAlert as AlertTriangle, Wrench } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ClipboardCheck, FileDown, FileSpreadsheet, LogOut, Menu, ShieldCheck, UserRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { supabase } from "@/lib/supabase";
+import { MktConverter } from "@/components/MktConverter";
+import { chemicalItems, createEmptyInspection, downloadInspection, type CheckValue, type InspectionForm, ppeItems, vehicleItems } from "@/lib/inspection";
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "ULC Temp → MKT Converter" },
-      { name: "description", content: "Convert ULC CCT room temperature form responses into the weekly MKT monitoring workbook." },
-      { property: "og:title", content: "ULC Temp → MKT Converter" },
-      { property: "og:description", content: "Turn guard temperature logs into weekly MKT sheets with formulas." },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-    ],
-  }),
+  head: () => ({ meta: [{ title: "ULC Operations Portal" }, { name: "description", content: "Secure delivery inspection and MKT operations portal." }] }),
   component: Index,
 });
 
-type Parsed = Awaited<ReturnType<typeof import("@/lib/mkt-converter").parseResponses>>;
-type Correction = Parsed["corrections"][number];
-
-const iso = (d: Date) => d.toISOString().slice(0, 10);
-
-function FileDrop({ label, hint, file, onFile }: { label: string; hint: string; file: File | null; onFile: (f: File) => void }) {
-  return (
-    <label className="flex cursor-pointer items-center gap-4 rounded-lg border-2 border-dashed border-border bg-card p-5 transition-colors hover:border-primary">
-      <div className="rounded-md bg-secondary p-3 text-primary">
-        {file ? <FileSpreadsheet className="h-6 w-6" /> : <Upload className="h-6 w-6" />}
-      </div>
-      <div className="min-w-0">
-        <div className="font-medium">{label}</div>
-        <div className="truncate text-sm text-muted-foreground">{file ? file.name : hint}</div>
-      </div>
-      <input type="file" accept=".xlsx" className="hidden" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
-    </label>
-  );
-}
+type Profile = { id: string; email: string; full_name: string; role: "admin" | "staff" };
+type Submission = { id: string; form_data: InspectionForm; created_at: string };
+type Section = "inspection" | "records" | "mkt" | "admin";
 
 function Index() {
-  const [respFile, setRespFile] = useState<File | null>(null);
-  const [mktFile, setMktFile] = useState<File | null>(null);
-  const [parsed, setParsed] = useState<Parsed | null>(null);
-  const [start, setStart] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [result, setResult] = useState<{ url: string; name: string; filled: number; missing: string[]; corrections: Correction[]; notes: string[] } | null>(null);
+  const [session, setSession] = useState<NonNullable<Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"]> | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState("");
 
-  async function onResponses(f: File) {
-    setRespFile(f); setError(""); setResult(null); setBusy(true);
-    try {
-      const { parseResponses } = await import("@/lib/mkt-converter");
-      const p = await parseResponses(await f.arrayBuffer());
-      setParsed(p);
-      if (p.maxDate) {
-        // default: most recent Monday-starting full week in the data
-        const d = new Date(p.maxDate);
-        d.setUTCDate(d.getUTCDate() - 6);
-        d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-        setStart(iso(d));
-      }
-    } catch (e) {
-      setError("Couldn't read that file. Make sure it's the ULC CCT Form responses sheet.");
-      console.error(e);
-    } finally { setBusy(false); }
-  }
+  useEffect(() => {
+    let mounted = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      setSession(data.session);
+      if (!data.session) setLoading(false);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (!nextSession) { setProfile(null); setLoading(false); }
+    });
+    return () => { mounted = false; data.subscription.unsubscribe(); };
+  }, []);
 
-  async function convert() {
-    if (!parsed || !start) return;
-    if (!mktFile) { setError("Please upload the existing MKT Monitoring workbook — its formulas are needed for the conversion."); return; }
-    setBusy(true); setError("");
-    try {
-      const { buildWorkbook } = await import("@/lib/mkt-converter");
-      const res = await buildWorkbook(parsed, new Date(`${start}T00:00:00Z`), await mktFile.arrayBuffer());
-      if (result) URL.revokeObjectURL(result.url);
-      setResult({ url: URL.createObjectURL(res.blob), name: res.fileName, filled: res.filled, missing: res.missing, corrections: res.corrections, notes: res.notes });
-    } catch (e) {
-      setError(`Conversion failed: ${e instanceof Error ? e.message : "check that the MKT workbook is the right file."}`);
-      console.error(e);
-    } finally { setBusy(false); }
-  }
+  useEffect(() => {
+    if (!session) return;
+    void supabase.from("profiles").select("id,email,full_name,role").eq("id", session.user.id).maybeSingle().then(({ data, error }) => {
+      if (error || !data) setAuthError("Your account is not ready yet. Please contact the administrator.");
+      else setProfile(data as Profile);
+      setLoading(false);
+    });
+  }, [session]);
 
-  const endLabel = start ? iso(new Date(Date.parse(start) + 6 * 864e5)) : "";
-
-  return (
-    <main className="min-h-screen bg-background px-4 py-12">
-      <div className="mx-auto max-w-2xl">
-        <p className="font-mono text-xs uppercase tracking-widest text-primary">ULC · Merck</p>
-        <h1 className="mt-2 text-3xl font-semibold tracking-tight">Room Temp → MKT Converter</h1>
-        <p className="mt-2 text-muted-foreground">
-          Upload the guard's form responses, pick the week, and download the MKT workbook with MIN / MAX / AVERAGE / MKT formulas filled in.
-        </p>
-
-        <div className="mt-8 space-y-4">
-          <FileDrop label="1. ULC CCT Room Temperature Responses" hint="Required — the Google Form export (.xlsx)" file={respFile} onFile={onResponses} />
-          <FileDrop label="2. Existing MKT Monitoring workbook" hint="Required — must contain the Summary sheet and weekly MKT formulas" file={mktFile} onFile={(f) => { setMktFile(f); setResult(null); }} />
-
-          {parsed && (
-            <div className="rounded-lg border border-border bg-card p-5">
-              <div className="text-sm text-muted-foreground">
-                {parsed.rows.toLocaleString()} readings found · {parsed.minDate && iso(parsed.minDate)} to {parsed.maxDate && iso(parsed.maxDate)}
-              </div>
-              <div className="mt-4 flex flex-wrap items-end gap-4">
-                <div className="space-y-1.5">
-                  <Label htmlFor="start">3. Week starts</Label>
-                  <Input id="start" type="date" value={start} onChange={(e) => { setStart(e.target.value); setResult(null); }} className="w-44" />
-                </div>
-                <div className="pb-2 font-mono text-sm text-muted-foreground">→ {endLabel} (7 days)</div>
-              </div>
-              <Button className="mt-5 w-full" size="lg" onClick={convert} disabled={busy || !start || !mktFile}>
-                {busy ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Convert
-              </Button>
-            </div>
-          )}
-
-          {busy && !parsed && <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Reading file…</div>}
-          {error && <div className="flex items-center gap-2 rounded-md bg-destructive/10 p-3 text-sm text-destructive"><AlertTriangle className="h-4 w-4" />{error}</div>}
-
-          {result && (
-            <div className="rounded-lg border border-primary/30 bg-secondary p-5">
-              <div className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5 text-primary" /> Ready: {result.filled} of 168 hours filled</div>
-              {result.notes.map((n) => <div key={n} className="mt-2 text-sm text-muted-foreground">{n}</div>)}
-              {result.corrections.length > 0 && (
-                <details className="mt-3 text-sm text-muted-foreground">
-                  <summary className="cursor-pointer flex items-center gap-1.5"><Wrench className="h-4 w-4 text-accent" /> {result.corrections.length} values were auto-corrected this week (highlighted yellow in the sheet)</summary>
-                  <div className="mt-2 max-h-48 overflow-auto font-mono text-xs">
-                    <table className="w-full border-collapse">
-                      <thead>
-                        <tr className="border-b text-left">
-                          <th className="py-1 pr-3 font-medium">Date</th>
-                          <th className="py-1 pr-3 font-medium">Time</th>
-                          <th className="py-1 pr-3 font-medium">Sensor</th>
-                          <th className="py-1 pr-3 font-medium text-right">Original</th>
-                          <th className="py-1 font-medium text-right">Corrected</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {result.corrections.map((c, idx) => (
-                          <tr key={idx} className="border-b border-border/50">
-                            <td className="py-1 pr-3">{c.date}</td>
-                            <td className="py-1 pr-3">{c.hour}</td>
-                            <td className="py-1 pr-3 max-w-[12rem] truncate">{c.label}</td>
-                            <td className="py-1 pr-3 text-right text-destructive">{c.raw}</td>
-                            <td className="py-1 text-right text-primary">{c.cleaned === null ? "(blank)" : c.cleaned}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </details>
-              )}
-              {result.missing.length > 0 && (
-                <details className="mt-2 text-sm text-muted-foreground">
-                  <summary className="cursor-pointer">{result.missing.length} hours have no reading (left blank)</summary>
-                  <div className="mt-2 max-h-40 overflow-auto font-mono text-xs">{result.missing.join(" · ")}</div>
-                </details>
-              )}
-              <Button asChild className="mt-4 w-full" size="lg">
-                <a href={result.url} download={result.name}><Download /> Download {result.name}</a>
-              </Button>
-            </div>
-          )}
-        </div>
-
-        <p className="mt-10 text-xs text-muted-foreground">
-          Files are processed in your browser and never uploaded. If several entries exist for the same hour, the one submitted closest to that hour is used. Chiller uses the NEW Chiller WH1 column; Bio Ref uses BioRef 1. Values outside the expected range are auto-corrected: a missing decimal point is reinserted (e.g. 300 → 30.0), and impossible values like dates or 3°C readings are left blank. Every change is listed in the results so you can verify.
-        </p>
-      </div>
-    </main>
-  );
+  if (loading) return <div className="grid min-h-screen place-items-center bg-slate-950 text-white">Loading secure portal…</div>;
+  if (!session || !profile) return <Login error={authError} />;
+  return <Portal profile={profile} />;
 }
+
+function Login({ error }: { error: string }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState(error);
+  async function signIn(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true); setMessage("");
+    const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+    if (signInError) setMessage("The email or password is not correct.");
+    setBusy(false);
+  }
+  return <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-10 text-white"><div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl"><div className="mb-8 flex items-center gap-3"><div className="grid h-12 w-12 place-items-center rounded-xl bg-amber-400 text-slate-950"><ShieldCheck /></div><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Union Logistics</p><h1 className="text-xl font-semibold">Operations Portal</h1></div></div><p className="mb-6 text-sm text-slate-300">Sign in with the account provided by your administrator.</p><form className="space-y-5" onSubmit={signIn}><div><Label className="text-slate-200" htmlFor="email">Work email</Label><Input className="mt-2 bg-slate-800 text-white" id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div><div><Label className="text-slate-200" htmlFor="password">Password</Label><Input className="mt-2 bg-slate-800 text-white" id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></div>{message && <p className="rounded-lg bg-red-950 p-3 text-sm text-red-200">{message}</p>}<Button className="h-11 w-full bg-amber-400 text-slate-950 hover:bg-amber-300" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</Button></form></div></main>;
+}
+
+function Portal({ profile }: { profile: Profile }) {
+  const [section, setSection] = useState<Section>("inspection");
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const nav = [{ id: "inspection" as const, label: "Vehicle inspection", icon: ClipboardCheck }, { id: "records" as const, label: "Saved records", icon: FileDown }, { id: "mkt" as const, label: "MKT converter", icon: FileSpreadsheet }, ...(profile.role === "admin" ? [{ id: "admin" as const, label: "Admin / IT", icon: ShieldCheck }] : [])];
+  return <div className="min-h-screen bg-slate-100 text-slate-900"><aside className={`fixed inset-y-0 left-0 z-40 w-72 transform bg-slate-950 text-white transition-transform md:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}><div className="flex h-full flex-col"><div className="flex items-center justify-between border-b border-slate-800 p-6"><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">ULC operations</p><h2 className="mt-1 text-lg font-semibold">Union Logistics</h2></div><button className="md:hidden" onClick={() => setMobileOpen(false)}><X /></button></div><nav className="flex-1 space-y-2 p-4">{nav.map(({ id, label, icon: Icon }) => <button key={id} onClick={() => { setSection(id); setMobileOpen(false); }} className={`flex w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-sm transition ${section === id ? "bg-amber-400 font-semibold text-slate-950" : "text-slate-300 hover:bg-slate-800 hover:text-white"}`}><Icon className="h-5 w-5" />{label}</button>)}</nav><div className="border-t border-slate-800 p-5"><div className="mb-4 flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-full bg-slate-700"><UserRound className="h-4 w-4" /></div><div className="min-w-0"><p className="truncate text-sm font-medium">{profile.full_name || profile.email}</p><p className="text-xs capitalize text-slate-400">{profile.role}</p></div></div><Button variant="outline" className="w-full border-slate-700 bg-transparent text-slate-200 hover:bg-slate-800 hover:text-white" onClick={() => void supabase.auth.signOut()}><LogOut /> Log out</Button></div></div></aside><div className="md:pl-72"><header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-slate-200 bg-white/95 px-5 backdrop-blur md:px-8"><button className="md:hidden" onClick={() => setMobileOpen(true)}><Menu /></button><div><p className="text-xs font-semibold uppercase tracking-[0.18em] text-teal-700">{navLabel(section)}</p><h1 className="text-lg font-semibold">{section === "inspection" ? "Delivery Vehicle Inspection" : navLabel(section)}</h1></div><div className="hidden text-right text-sm md:block"><p className="font-medium">{profile.full_name || profile.email}</p><p className="text-xs capitalize text-slate-500">{profile.role} account</p></div></header><main className="p-5 md:p-8">{section === "inspection" && <InspectionFormView profile={profile} />}{section === "records" && <RecordsView profile={profile} />}{section === "mkt" && <MktView />}{section === "admin" && profile.role === "admin" && <AdminView />}</main></div></div>;
+}
+
+function navLabel(section: Section) { return { inspection: "Daily control", records: "History", mkt: "Temperature quality", admin: "Restricted tools" }[section]; }
+
+function InspectionFormView({ profile }: { profile: Profile }) {
+  const [form, setForm] = useState<InspectionForm>(createEmptyInspection);
+  const [message, setMessage] = useState(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
+  const setField = (key: keyof InspectionForm, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const setCheck = (group: "ppe" | "chemical" | "vehicle", key: string, value: CheckValue) => setForm((current) => ({ ...current, [group]: { ...current[group], [key]: value } }));
+  const setRemark = (group: "ppeRemarks" | "chemicalRemarks" | "vehicleRemarks", key: string, value: string) => setForm((current) => ({ ...current, [group]: { ...current[group], [key]: value } }));
+  async function save() { setBusy(true); setError(""); setMessage(""); const { error: saveError } = await supabase.from("inspection_submissions").insert({ form_data: form }); if (saveError) setError("The inspection could not be saved. Please try again."); else setMessage("Inspection saved securely."); setBusy(false); }
+  return <div className="mx-auto max-w-6xl"><div className="mb-7 flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-sm text-slate-500">OPS-FORMS-06 · Revision 01</p><h2 className="mt-1 text-3xl font-semibold tracking-tight">Delivery Vehicle Inspection Form</h2><p className="mt-2 max-w-2xl text-slate-600">Complete every section before the vehicle enters or leaves the facility.</p></div><div className="flex gap-2"><Button variant="outline" onClick={() => downloadInspection(form, "doc")}><FileDown /> Word document</Button><Button onClick={() => downloadInspection(form, "pdf")}><FileDown /> Print / PDF</Button></div></div><div className="space-y-6"><SectionCard title="Delivery and driver details"><div className="grid gap-4 md:grid-cols-2">{([["date", "Date", "date"], ["direction", "Incoming or outgoing", "text"], ["arrivalTime", "Arrival time", "time"], ["dispatchTime", "Dispatch time", "time"], ["truckingCompany", "Trucking company", "text"], ["plateNumber", "Plate number", "text"], ["truckType", "Truck type", "text"], ["driverName", "Name of driver", "text"], ["licenseNumber", "Driver's license no.", "text"], ["helpers", "Name of helper(s)", "text"]] as const).map(([key, label, type]) => <div key={key}><Label htmlFor={key}>{label}</Label><Input className="mt-2" id={key} type={type} value={form[key]} onChange={(e) => setField(key, e.target.value)} /></div>)}</div></SectionCard><div className="grid gap-6 xl:grid-cols-2"><ChecklistCard title="Driver / Helper PPE Requirements" items={ppeItems} values={form.ppe} remarks={form.ppeRemarks} mode="ppe" onCheck={setCheck} onRemark={setRemark} /><ChecklistCard title="For Chemical Handling" items={chemicalItems} values={form.chemical} remarks={form.chemicalRemarks} mode="chemical" onCheck={setCheck} onRemark={setRemark} /></div><div className="grid gap-6 xl:grid-cols-2"><ChecklistCard title="Vehicle Requirements" items={vehicleItems.slice(0, 5)} values={form.vehicle} remarks={form.vehicleRemarks} mode="vehicle" onCheck={setCheck} onRemark={setRemark} /><ChecklistCard title="Vehicle Requirements" items={vehicleItems.slice(5)} values={form.vehicle} remarks={form.vehicleRemarks} mode="vehicle" onCheck={setCheck} onRemark={setRemark} /></div><div className="rounded-2xl border border-amber-200 bg-amber-50 p-5 font-medium text-amber-950">Note: If there are issues with trucker or forwarder, immediately inform Warehouse in-charge.</div><SectionCard title="Sign-off"><div className="grid gap-4 md:grid-cols-2"><div><Label htmlFor="preparedBy">Prepared by · Guard</Label><Input className="mt-2" id="preparedBy" value={form.preparedBy} onChange={(e) => setField("preparedBy", e.target.value)} placeholder="Signature over printed name" /></div><div><Label htmlFor="notedBy">Noted by · Assistant Manager</Label><Input className="mt-2" id="notedBy" value={form.notedBy} onChange={(e) => setField("notedBy", e.target.value)} placeholder="Signature over printed name" /></div></div></SectionCard><div className="flex flex-col items-stretch justify-between gap-4 rounded-2xl bg-slate-950 p-5 text-white sm:flex-row sm:items-center"><div><p className="font-medium">Ready to submit?</p><p className="text-sm text-slate-300">This saves the complete form under your account.</p></div><Button className="bg-amber-400 text-slate-950 hover:bg-amber-300" onClick={() => void save()} disabled={busy}>{busy ? "Saving…" : "Save inspection"}</Button></div>{message && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{message}</p>}{error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</p>}</div></div>;
+}
+
+function SectionCard({ title, children }: { title: string; children: React.ReactNode }) { return <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm md:p-7"><h3 className="mb-5 text-lg font-semibold">{title}</h3>{children}</section>; }
+function ChecklistCard({ title, items, values, remarks, mode, onCheck, onRemark }: { title: string; items: readonly (readonly [string, string])[]; values: Record<string, CheckValue>; remarks: Record<string, string>; mode: "ppe" | "chemical" | "vehicle"; onCheck: (group: "ppe" | "chemical" | "vehicle", key: string, value: CheckValue) => void; onRemark: (group: "ppeRemarks" | "chemicalRemarks" | "vehicleRemarks", key: string, value: string) => void }) { const yesNo = mode === "chemical"; const remarkGroup = `${mode}Remarks` as "ppeRemarks" | "chemicalRemarks" | "vehicleRemarks"; return <SectionCard title={title}><div className="overflow-x-auto"><table className="w-full min-w-[560px] text-left text-sm"><thead><tr className="border-b text-xs uppercase tracking-wide text-slate-500"><th className="pb-3">Requirement</th><th className="pb-3 text-center">{yesNo ? "Yes" : "None"}</th><th className="pb-3 text-center">{yesNo ? "No" : "Yes"}</th><th className="pb-3">Remarks</th></tr></thead><tbody>{items.map(([key, label]) => <tr key={key} className="border-b last:border-0"><td className="py-3 pr-3 font-medium">{label}</td><td className="py-3 text-center"><input aria-label={`${label} ${yesNo ? "yes" : "none"}`} type="radio" name={`${mode}-${key}`} checked={values[key] === (yesNo ? "yes" : "none")} onChange={() => onCheck(mode, key, yesNo ? "yes" : "none")} /></td><td className="py-3 text-center"><input aria-label={`${label} ${yesNo ? "no" : "yes"}`} type="radio" name={`${mode}-${key}`} checked={values[key] === (yesNo ? "none" : "yes")} onChange={() => onCheck(mode, key, yesNo ? "none" : "yes")} /></td><td className="py-2"><Input value={remarks[key]} onChange={(e) => onRemark(remarkGroup, key, e.target.value)} /></td></tr>)}</tbody></table></div></SectionCard>; }
+
+function RecordsView({ profile }: { profile: Profile }) { const [records, setRecords] = useState<Submission[]>([]); const [error, setError] = useState(""); useEffect(() => { void supabase.from("inspection_submissions").select("id,form_data,created_at").order("created_at", { ascending: false }).then(({ data, error: fetchError }) => { if (fetchError) setError("Saved inspections could not be loaded."); else setRecords((data ?? []) as Submission[]); }); }, [profile]); return <div className="mx-auto max-w-5xl"><div className="mb-7"><p className="text-sm text-slate-500">Private to your account{profile.role === "admin" ? " · administrator view includes all staff records" : ""}</p><h2 className="mt-1 text-3xl font-semibold">Saved inspections</h2></div>{error && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</p>}{records.length === 0 ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center text-slate-500">No saved inspections yet.</div> : <div className="grid gap-4">{records.map((record) => <div key={record.id} className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center"><div><p className="font-semibold">{record.form_data.truckingCompany || "Unnamed trucking company"} · {record.form_data.plateNumber || "No plate number"}</p><p className="mt-1 text-sm text-slate-500">Inspection date: {record.form_data.date || "—"} · Saved {new Date(record.created_at).toLocaleString()}</p></div><div className="flex gap-2"><Button variant="outline" onClick={() => downloadInspection(record.form_data, "doc")}><FileDown /> Word</Button><Button variant="outline" onClick={() => downloadInspection(record.form_data, "pdf")}><FileDown /> PDF</Button></div></div>)}</div>}</div>; }
+
+function MktView() { return <MktConverter />; }
+
+function AdminView() { const [email, setEmail] = useState(""); const [fullName, setFullName] = useState(""); const [password, setPassword] = useState(""); const [role, setRole] = useState<"staff" | "admin">("staff"); const [message, setMessage] = useState(""); const [error, setError] = useState(""); const [busy, setBusy] = useState(false); async function saveAccount() { setBusy(true); setMessage(""); setError(""); const { error: invokeError } = await supabase.functions.invoke("manage-account", { body: { email, full_name: fullName, password, role } }); if (invokeError) setError("The account could not be saved. Check the details and try again."); else { setMessage("Account saved. The person can now sign in with the email and password you provided."); setEmail(""); setFullName(""); setPassword(""); } setBusy(false); } return <div className="mx-auto max-w-3xl"><div className="mb-7"><p className="text-sm text-slate-500">Restricted administrator tools</p><h2 className="mt-1 text-3xl font-semibold">Account management</h2><p className="mt-2 text-slate-600">Create a new staff account or set a new password for an existing account.</p></div><SectionCard title="Create or update account"><div className="grid gap-5 md:grid-cols-2"><div><Label htmlFor="account-name">Full name</Label><Input className="mt-2" id="account-name" value={fullName} onChange={(e) => setFullName(e.target.value)} /></div><div><Label htmlFor="account-email">Work email</Label><Input className="mt-2" id="account-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div><div><Label htmlFor="account-password">New password</Label><Input className="mt-2" id="account-password" type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} /><p className="mt-1 text-xs text-slate-500">At least 8 characters.</p></div><div><Label htmlFor="account-role">Account type</Label><select className="mt-2 flex h-9 w-full rounded-md border border-input bg-white px-3 text-sm" id="account-role" value={role} onChange={(e) => setRole(e.target.value as "staff" | "admin")}><option value="staff">Staff</option><option value="admin">Admin / IT</option></select></div></div><Button className="mt-6" onClick={() => void saveAccount()} disabled={busy || !email || !fullName || password.length < 8}>{busy ? "Saving…" : "Save account and password"}</Button>{message && <p className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">{message}</p>}{error && <p className="mt-4 rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}</p>}</SectionCard><SectionCard title="Security note"><p className="text-sm leading-6 text-slate-600">Passwords are managed by the secure sign-in service and are not stored in the inspection database. This screen is only available to administrator accounts.</p></SectionCard></div>; }
