@@ -46,7 +46,7 @@ function Index() {
   const [start, setStart] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState<{ url: string; name: string; filled: number; missing: string[]; corrections: Correction[] } | null>(null);
+  const [result, setResult] = useState<{ url: string; name: string; filled: number; missing: string[]; corrections: Correction[]; notes: string[] } | null>(null);
 
   async function onResponses(f: File) {
     setRespFile(f); setError(""); setResult(null); setBusy(true);
@@ -69,14 +69,15 @@ function Index() {
 
   async function convert() {
     if (!parsed || !start) return;
+    if (!mktFile) { setError("Please upload the existing MKT Monitoring workbook — its formulas are needed for the conversion."); return; }
     setBusy(true); setError("");
     try {
       const { buildWorkbook } = await import("@/lib/mkt-converter");
-      const res = await buildWorkbook(parsed, new Date(`${start}T00:00:00Z`), mktFile ? await mktFile.arrayBuffer() : undefined);
+      const res = await buildWorkbook(parsed, new Date(`${start}T00:00:00Z`), await mktFile.arrayBuffer());
       if (result) URL.revokeObjectURL(result.url);
-      setResult({ url: URL.createObjectURL(res.blob), name: res.fileName, filled: res.filled, missing: res.missing, corrections: res.corrections });
+      setResult({ url: URL.createObjectURL(res.blob), name: res.fileName, filled: res.filled, missing: res.missing, corrections: res.corrections, notes: res.notes });
     } catch (e) {
-      setError("Conversion failed. Check that the MKT workbook is the right file.");
+      setError(`Conversion failed: ${e instanceof Error ? e.message : "check that the MKT workbook is the right file."}`);
       console.error(e);
     } finally { setBusy(false); }
   }
@@ -94,15 +95,12 @@ function Index() {
 
         <div className="mt-8 space-y-4">
           <FileDrop label="1. ULC CCT Room Temperature Responses" hint="Required — the Google Form export (.xlsx)" file={respFile} onFile={onResponses} />
-          <FileDrop label="2. Existing MKT Monitoring workbook" hint="Optional — new week is added as a sheet + Summary column" file={mktFile} onFile={(f) => { setMktFile(f); setResult(null); }} />
+          <FileDrop label="2. Existing MKT Monitoring workbook" hint="Required — must contain the Summary sheet and weekly MKT formulas" file={mktFile} onFile={(f) => { setMktFile(f); setResult(null); }} />
 
           {parsed && (
             <div className="rounded-lg border border-border bg-card p-5">
               <div className="text-sm text-muted-foreground">
                 {parsed.rows.toLocaleString()} readings found · {parsed.minDate && iso(parsed.minDate)} to {parsed.maxDate && iso(parsed.maxDate)}
-                {parsed.corrections.length > 0 && (
-                  <span className="ml-1 text-accent-foreground font-medium">· {parsed.corrections.length} corrections detected</span>
-                )}
               </div>
               <div className="mt-4 flex flex-wrap items-end gap-4">
                 <div className="space-y-1.5">
@@ -111,7 +109,7 @@ function Index() {
                 </div>
                 <div className="pb-2 font-mono text-sm text-muted-foreground">→ {endLabel} (7 days)</div>
               </div>
-              <Button className="mt-5 w-full" size="lg" onClick={convert} disabled={busy || !start}>
+              <Button className="mt-5 w-full" size="lg" onClick={convert} disabled={busy || !start || !mktFile}>
                 {busy ? <Loader2 className="animate-spin" /> : <FileSpreadsheet />} Convert
               </Button>
             </div>
@@ -123,9 +121,10 @@ function Index() {
           {result && (
             <div className="rounded-lg border border-primary/30 bg-secondary p-5">
               <div className="flex items-center gap-2 font-medium"><CheckCircle2 className="h-5 w-5 text-primary" /> Ready: {result.filled} of 168 hours filled</div>
+              {result.notes.map((n) => <div key={n} className="mt-2 text-sm text-muted-foreground">{n}</div>)}
               {result.corrections.length > 0 && (
                 <details className="mt-3 text-sm text-muted-foreground">
-                  <summary className="cursor-pointer flex items-center gap-1.5"><Wrench className="h-4 w-4 text-accent" /> {result.corrections.length} values were auto-corrected</summary>
+                  <summary className="cursor-pointer flex items-center gap-1.5"><Wrench className="h-4 w-4 text-accent" /> {result.corrections.length} values were auto-corrected this week (highlighted yellow in the sheet)</summary>
                   <div className="mt-2 max-h-48 overflow-auto font-mono text-xs">
                     <table className="w-full border-collapse">
                       <thead>
