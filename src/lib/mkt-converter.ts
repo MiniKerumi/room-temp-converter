@@ -32,7 +32,7 @@ const RANGES: Record<string, { min: number; max: number }> = {
   F: { min: 0, max: 100 },   // Humidity
   G: { min: 0, max: 40 },    // AC2 15-25
   H: { min: 0, max: 100 },   // Humidity
-  I: { min: -100, max: -50 }, // Ultralow -80
+  I: { min: -100, max: 10 },  // Ultralow -80 (keep real warm excursions like -45)
   J: { min: 10, max: 50 },   // Oxidizing 26-30
   K: { min: 0, max: 100 },   // Humidity
   L: { min: 10, max: 50 },   // Flammable 26-30
@@ -113,7 +113,8 @@ function cleanValue(val: number, target: string): { value: number | null; action
   if (val >= range.min && val <= range.max) return { value: val, action: null };
   // Missing decimal point: value is ~10x the expected range and dividing by 10 lands in range.
   // Only apply to positive values — negative out-of-range values are more likely wrong-column errors.
-  if (val > 0 && val / 10 >= range.min && val / 10 <= range.max) return { value: val / 10, action: "decimal" };
+  // Negative values only when clearly 10x (e.g. -180 -> -18), so a wrong-field -80 in Bio Ref is not turned into -8.
+  if ((val > 0 || val <= -100) && val / 10 >= range.min && val / 10 <= range.max) return { value: Math.round(val) / 10, action: "decimal" };
   return { value: null, action: "blank" };
 }
 
@@ -165,122 +166,3 @@ export function sheetNameFor(start: Date) {
   return `Temp ${f(start)}-${f(end)}`;
 }
 
-export type ConvertResult = { blob: Blob; fileName: string; filled: number; missing: string[]; corrections: Correction[] };
-
-export async function buildWorkbook(parsed: ParsedResponses, start: Date, mktBuf?: ArrayBuffer): Promise<ConvertResult> {
-  const wb = new ExcelJS.Workbook();
-  if (mktBuf) await wb.xlsx.load(mktBuf);
-  let name = sheetNameFor(start);
-  const existing = wb.getWorksheet(name);
-  if (existing) wb.removeWorksheet(existing.id);
-  const template = wb.worksheets.filter((w) => w.name.startsWith("Temp ")).pop();
-  const ws = wb.addWorksheet(name);
-
-  // header
-  const header = ws.getRow(1);
-  header.getCell("A").value = "Input date";
-  header.getCell("B").value = "Time";
-  COLUMN_MAP.forEach((m) => (header.getCell(m.target).value = m.label));
-  if (template) {
-    for (let c = 1; c <= 19; c++) {
-      const w = template.getColumn(c).width; if (w) ws.getColumn(c).width = w;
-      header.getCell(c).style = JSON.parse(JSON.stringify(template.getRow(1).getCell(c).style ?? {}));
-    }
-    if (template.getRow(1).height) header.height = template.getRow(1).height;
-  } else {
-    ws.getColumn(1).width = 12; ws.getColumn(2).width = 8;
-    for (let c = 3; c <= 19; c++) ws.getColumn(c).width = 14;
-    header.font = { bold: true }; header.alignment = { wrapText: true, vertical: "middle" };
-  }
-
-  let filled = 0; const missing: string[] = [];
-  for (let d = 0; d < 7; d++) {
-    const date = addDays(start, d);
-    for (let h = 0; h < 24; h++) {
-      const r = ws.getRow(2 + d * 24 + h);
-      r.getCell("A").value = date; r.getCell("A").numFmt = "m/d/yyyy";
-      r.getCell("B").value = h === 0 ? "2400H" : `${String(h).padStart(2, "0")}00H`;
-      const rd = parsed.map.get(`${dayKey(date)}|${h}`);
-      if (rd) { filled++; COLUMN_MAP.forEach((m) => { if (rd.values[m.target] !== null) r.getCell(m.target).value = rd.values[m.target]; }); }
-      else missing.push(`${date.toISOString().slice(0, 10)} ${r.getCell("B").value}`);
-    }
-  }
-  ws.getCell("B170").value = "2400H";
-
-  // formulas (same as existing MKT sheets)
-  ws.getCell("B173").value = "MIN"; ws.getCell("B174").value = "MAX"; ws.getCell("B175").value = "AVERAGE"; ws.getCell("B178").value = "MKT";
-  // Pre-compute results so Excel shows values immediately (cached formula results)
-  const stats: Record<string, number | string> = {};
-  for (const c of STAT_COLS) {
-    const vals: number[] = [];
-    for (let r = 2; r <= 170; r++) { const v = ws.getCell(`${c}${r}`).value; if (typeof v === "number") vals.push(v); }
-    const has = vals.length > 0;
-    const avg = has ? vals.reduce((a, b) => a + b, 0) / vals.length : "";
-    const k = typeof avg === "number" ? avg + 273.15 : "";
-    const ln = typeof k === "number" ? -83.14472 / (0.008314472 * k) : "";
-    const mkt = typeof ln === "number" ? 83.14472 / (0.008314472 * -ln) - 273.15 : "";
-    const res: Record<number, number | string> = { 173: has ? Math.min(...vals) : 0, 174: has ? Math.max(...vals) : 0, 175: avg, 176: k, 177: ln, 178: mkt };
-    for (const [n, v] of Object.entries(res)) stats[`${c}${n}`] = v;
-    const R = (n: number) => res[n] as number;
-    ws.getCell(`${c}173`).value = { formula: `MIN(${c}2:${c}170)`, result: R(173) };
-    ws.getCell(`${c}174`).value = { formula: `MAX(${c}2:${c}170)`, result: R(174) };
-    ws.getCell(`${c}175`).value = { formula: `IFERROR(AVERAGE(${c}2:${c}170),"")`, result: R(175) };
-    ws.getCell(`${c}176`).value = { formula: `IFERROR(${c}175+273.15,"")`, result: R(176) };
-    ws.getCell(`${c}177`).value = { formula: `IFERROR(-$B$181/($B$182*${c}176),"")`, result: R(177) };
-    ws.getCell(`${c}178`).value = { formula: `IFERROR($B$181/($B$182*(-${c}177))-$B$183,"")`, result: R(178) };
-    for (const n of [173, 174, 175, 178]) ws.getCell(`${c}${n}`).numFmt = "0.00";
-  }
-  ws.getCell("A181").value = "Delta H"; ws.getCell("B181").value = 83.14472; ws.getCell("C181").value = "kJ/mole";
-  ws.getCell("A182").value = "R"; ws.getCell("B182").value = 0.008314472; ws.getCell("C182").value = "kJ/mole/degree";
-  ws.getCell("A183").value = "°C to K"; ws.getCell("B183").value = 273.15;
-  for (const n of [173, 174, 175, 178]) ws.getCell(`B${n}`).font = { bold: true };
-
-  // place new sheet right after Summary
-  if (mktBuf) {
-    const ordered = wb.worksheets.filter((w) => w !== ws);
-    const sumIdx = ordered.findIndex((w) => w.name === "Summary");
-    ordered.splice(sumIdx >= 0 ? sumIdx + 1 : 0, 0, ws);
-    ordered.forEach((w, i) => ((w as unknown as { orderNo: number }).orderNo = i));
-    addSummaryColumn(wb, name, start, stats);
-  }
-
-  // force Excel to recalculate everything when the file is opened
-  (wb as unknown as { calcProperties: { fullCalcOnLoad: boolean } }).calcProperties = { fullCalcOnLoad: true };
-  const out = await wb.xlsx.writeBuffer();
-  const blob = new Blob([out], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-  const end = addDays(start, 6);
-  const up = (d: Date) => `${(MONTHS[d.getUTCMonth()] ?? "").toUpperCase()}_${d.getUTCDate()}`;
-  name = `${up(start)}-${up(end)}_MKT_Monitoring_ULC_Merck.xlsx`;
-  return { blob, fileName: name, filled, missing, corrections: parsed.corrections };
-}
-
-function addSummaryColumn(wb: ExcelJS.Workbook, sheetName: string, start: Date, stats: Record<string, number | string>) {
-  const sum = wb.getWorksheet("Summary");
-  if (!sum) return;
-  // find last column whose row-4 cell links to a "Temp" sheet
-  let last = 0;
-  sum.getRow(4).eachCell((cell, c) => {
-    const v = cell.value as { formula?: string } | null;
-    if (v && typeof v === "object" && v.formula?.includes("Temp ")) last = c;
-  });
-  if (!last) return;
-  const prevF = (sum.getRow(4).getCell(last).value as { formula: string }).formula;
-  if (prevF.includes(`'${sheetName}'`)) return; // already linked
-  const target = last + 1;
-  sum.eachRow((row) => {
-    const src = row.getCell(last);
-    const v = src.value as { formula?: string } | null;
-    const dst = row.getCell(target);
-    if (v && typeof v === "object" && v.formula) {
-      const formula = v.formula.replace(/'[^']*'!/g, `'${sheetName}'!`);
-      const ref = formula.match(/^'[^']*'!\$?([A-Z]+)\$?(\d+)$/);
-      const result = ref ? stats[`${ref[1]}${ref[2]}`] : undefined;
-      dst.value = (result !== undefined ? { formula, result } : { formula }) as ExcelJS.CellValue;
-      dst.style = JSON.parse(JSON.stringify(src.style ?? {}));
-    }
-  });
-  const end = addDays(start, 6);
-  sum.getRow(3).getCell(target).value = `${start.getUTCDate()}-${end.getUTCDate()}`;
-  sum.getRow(3).getCell(target).style = JSON.parse(JSON.stringify(sum.getRow(3).getCell(last).style ?? {}));
-  void colLetter; void colNum;
-}
