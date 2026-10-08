@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { supabase, supabaseConfigured } from "@/lib/supabase";
+import { bootstrapAdmin, manageAccount } from "@/lib/admin.functions";
 import { MktConverter } from "@/components/MktConverter";
 import { chemicalItems, createEmptyInspection, downloadInspection, type CheckValue, type InspectionForm, ppeItems, vehicleItems } from "@/lib/inspection";
 
@@ -48,11 +49,19 @@ function SecureApp() {
 
   useEffect(() => {
     if (!session) return;
-    void supabase.from("profiles").select("id,email,full_name,role").eq("id", session.user.id).maybeSingle().then(({ data, error }) => {
-      if (error || !data) setAuthError("Your account is not ready yet. Please contact the administrator.");
-      else setProfile(data as Profile);
+    void (async () => {
+      const [{ data: profileRow, error: profileError }, { data: roleRows }] = await Promise.all([
+        supabase.from("profiles").select("id,email,full_name").eq("id", session.user.id).maybeSingle(),
+        supabase.from("user_roles").select("role").eq("user_id", session.user.id),
+      ]);
+      if (profileError || !profileRow) {
+        setAuthError("Your account is not ready yet. Please contact the administrator.");
+      } else {
+        const isAdmin = (roleRows ?? []).some((r) => r.role === "admin");
+        setProfile({ ...(profileRow as Omit<Profile, "role">), role: isAdmin ? "admin" : "staff" });
+      }
       setLoading(false);
-    });
+    })();
   }, [session]);
 
   if (loading) return <div className="grid min-h-screen place-items-center bg-slate-950 text-white">Loading secure portal…</div>;
