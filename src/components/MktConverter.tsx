@@ -41,7 +41,7 @@ export function MktConverter() {
     try {
       const data = await buildWorkbook(parsed, new Date(`${start}T00:00:00Z`), await workbookFile.arrayBuffer());
       if (result) URL.revokeObjectURL(result.url);
-      setResult({ ...data, url: URL.createObjectURL(data.blob) });
+      setResult({ ...data, name: data.fileName, url: URL.createObjectURL(data.blob) });
     } catch { setError("Conversion failed. Check that the MKT workbook contains the Summary sheet and weekly template."); }
     setBusy(false);
   }
