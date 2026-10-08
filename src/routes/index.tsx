@@ -4,7 +4,7 @@ import { ClipboardCheck, FileDown, FileSpreadsheet, LogOut, Menu, ShieldCheck, U
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { supabase } from "@/lib/supabase";
+import { supabase, supabaseConfigured } from "@/lib/supabase";
 import { MktConverter } from "@/components/MktConverter";
 import { chemicalItems, createEmptyInspection, downloadInspection, type CheckValue, type InspectionForm, ppeItems, vehicleItems } from "@/lib/inspection";
 
@@ -18,6 +18,15 @@ type Submission = { id: string; form_data: InspectionForm; created_at: string };
 type Section = "inspection" | "records" | "mkt" | "admin";
 
 function Index() {
+  if (!supabaseConfigured) return <NotConnected />;
+  return <SecureApp />;
+}
+
+function NotConnected() {
+  return <main className="min-h-screen bg-slate-100 p-5 md:p-8"><div className="mx-auto mb-6 max-w-5xl rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">Sign-in, inspections and account management are turned off because no backend is connected yet. The MKT converter below still works.</div><MktView /></main>;
+}
+
+function SecureApp() {
   const [session, setSession] = useState<NonNullable<Awaited<ReturnType<typeof supabase.auth.getSession>>["data"]["session"]> | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
