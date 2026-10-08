@@ -1,12 +1,5 @@
 # Room Temp Converter
 
-can you make an app that auto converts this sheet ULC CCT room temp 
-
-to this excel, Sept 21 MKT (it has a formula already in sept 21 mkt please check)
-
-This project was built with [Lovable](https://lovable.dev).
-
-## Build with Lovable
 
 Continue developing this project in the [Lovable editor](https://lovable.dev/projects/df366bb9-ccfe-47d9-87dc-bf6931575830).
 
