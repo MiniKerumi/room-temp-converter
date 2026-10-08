@@ -72,6 +72,8 @@ function SecureApp() {
 function Login({ error }: { error: string }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [setupMode, setSetupMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(error);
   async function signIn(event: React.FormEvent) {
@@ -79,6 +81,20 @@ function Login({ error }: { error: string }) {
     const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
     if (signInError) setMessage("The email or password is not correct.");
     setBusy(false);
+  }
+  async function createFirstAdmin(event: React.FormEvent) {
+    event.preventDefault(); setBusy(true); setMessage("");
+    try {
+      await bootstrapAdmin({ data: { email, full_name: fullName, password, role: "admin" } });
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) setMessage("Admin account created. Now sign in with it.");
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "The admin account could not be created.");
+    }
+    setBusy(false);
+  }
+  if (setupMode) {
+    return <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-10 text-white"><div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl"><div className="mb-8 flex items-center gap-3"><div className="grid h-12 w-12 place-items-center rounded-xl bg-amber-400 text-slate-950"><ShieldCheck /></div><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Union Logistics</p><h1 className="text-xl font-semibold">First-time setup</h1></div></div><p className="mb-6 text-sm text-slate-300">Create the first administrator account. This only works once; after that, admins create accounts from the Admin / IT page.</p><form className="space-y-5" onSubmit={createFirstAdmin}><div><Label className="text-slate-200" htmlFor="setup-name">Full name</Label><Input className="mt-2 bg-slate-800 text-white" id="setup-name" value={fullName} onChange={(e) => setFullName(e.target.value)} required /></div><div><Label className="text-slate-200" htmlFor="setup-email">Work email</Label><Input className="mt-2 bg-slate-800 text-white" id="setup-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div><div><Label className="text-slate-200" htmlFor="setup-password">Password</Label><Input className="mt-2 bg-slate-800 text-white" id="setup-password" type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} required /></div>{message && <p className="rounded-lg bg-red-950 p-3 text-sm text-red-200">{message}</p>}<Button className="h-11 w-full bg-amber-400 text-slate-950 hover:bg-amber-300" disabled={busy || password.length < 8}>{busy ? "Creating…" : "Create admin account"}</Button><button type="button" className="w-full text-center text-sm text-slate-400 underline" onClick={() => { setSetupMode(false); setMessage(""); }}>Back to sign in</button></form></div></main>;
   }
   return <main className="flex min-h-screen items-center justify-center bg-slate-950 px-4 py-10 text-white"><div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-8 shadow-2xl"><div className="mb-8 flex items-center gap-3"><div className="grid h-12 w-12 place-items-center rounded-xl bg-amber-400 text-slate-950"><ShieldCheck /></div><div><p className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-300">Union Logistics</p><h1 className="text-xl font-semibold">Operations Portal</h1></div></div><p className="mb-6 text-sm text-slate-300">Sign in with the account provided by your administrator.</p><form className="space-y-5" onSubmit={signIn}><div><Label className="text-slate-200" htmlFor="email">Work email</Label><Input className="mt-2 bg-slate-800 text-white" id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></div><div><Label className="text-slate-200" htmlFor="password">Password</Label><Input className="mt-2 bg-slate-800 text-white" id="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></div>{message && <p className="rounded-lg bg-red-950 p-3 text-sm text-red-200">{message}</p>}<Button className="h-11 w-full bg-amber-400 text-slate-950 hover:bg-amber-300" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</Button></form></div></main>;
 }
