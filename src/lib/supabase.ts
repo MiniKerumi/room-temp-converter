@@ -1,7 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 
-const url = import.meta.env.VITE_SUPABASE_URL as string | undefined;
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined;
+const url = import.meta.env['VITE_SUPABASE_URL'] as string | undefined;
+const key = import.meta.env['VITE_SUPABASE_ANON_KEY'] as string | undefined;
 
 /** False until a backend is connected — the app must not call sign-in or data features then. */
 export const supabaseConfigured = Boolean(url && key);
